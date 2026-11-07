@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { type Item, type ItemPatch, isKind, type NewItem, normalizeTags } from "../shared/item";
 import { canonicalUrl, kindForUrl } from "./kind";
@@ -34,6 +34,11 @@ const toItem = (r: Row): Item => ({
   createdAt: r.created_at,
 });
 
+// The iOS Shortcut shows the raw response in a notification, so Bearer callers get one readable line
+// unless they ask for JSON. The web app authenticates with the cookie and always gets JSON.
+const wantsText = (c: Context) =>
+  !getCookie(c, COOKIE) && !!c.req.header("authorization") && !c.req.header("accept")?.includes("application/json");
+
 const ftsQuery = (q: string) => (q.match(/[\p{L}\p{N}_]+/gu) ?? []).map((t) => `"${t}"*`).join(" ");
 
 const app = new Hono<{ Bindings: Env }>().basePath("/api");
@@ -56,7 +61,9 @@ app.post("/login", async (c) => {
 app.use("*", async (c, next) => {
   const presented = getCookie(c, COOKIE) ?? c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   if (!presented || !c.env.POCKIT_PASSWORD || !safeEqual(presented, await sessionToken(c.env.POCKIT_PASSWORD))) {
-    return c.json({ error: "Unauthorized" }, 401);
+    return wantsText(c)
+      ? c.text("Pockit error: wrong token. Copy the Header row from Pockit Settings again.", 401)
+      : c.json({ error: "Unauthorized" }, 401);
   }
   await next();
 });
@@ -103,9 +110,14 @@ app.get("/facets", async (c) => {
 });
 
 app.post("/items", async (c) => {
-  const body = await c.req.json<NewItem>();
+  const body = await c.req.json<NewItem>().catch(() => ({}) as NewItem);
   const input = typeof body.input === "string" ? body.input.trim() : "";
-  if (!input) return c.json({ error: "Nothing to save" }, 400);
+  const text = wantsText(c);
+  if (!input) return text ? c.text("Pockit error: nothing to save. Share a link or some text.", 400) : c.json({ error: "Nothing to save" }, 400);
+  const reply = (row: Row, duplicate: boolean) =>
+    text
+      ? c.text(`${duplicate ? "Already saved" : "Saved"}: ${row.title}`, duplicate ? 200 : 201)
+      : c.json({ item: toItem(row), duplicate }, duplicate ? 200 : 201);
 
   const tags = JSON.stringify(normalizeTags(Array.isArray(body.tags) ? body.tags : []));
   const note = body.note?.trim() || null;
@@ -115,7 +127,7 @@ app.post("/items", async (c) => {
 
   if (url) {
     const existing = await c.env.DB.prepare("SELECT * FROM items WHERE url = ?").bind(url.href).first<Row>();
-    if (existing) return c.json({ item: toItem(existing), duplicate: true });
+    if (existing) return reply(existing, true);
     const kind = isKind(body.kind) ? body.kind : kindForUrl(url);
     const fetched = await fetchMeta(url, kind);
     const row = await c.env.DB.prepare(
@@ -124,7 +136,7 @@ app.post("/items", async (c) => {
     )
       .bind(id, kind, fetched.title ?? url.hostname + url.pathname, url.href, note, tags, JSON.stringify(fetched.meta), now)
       .first<Row>();
-    return c.json({ item: toItem(row!), duplicate: row!.id !== id }, 201);
+    return reply(row!, row!.id !== id);
   }
 
   const kind = isKind(body.kind) ? body.kind : "note";
@@ -135,7 +147,7 @@ app.post("/items", async (c) => {
   )
     .bind(id, kind, title, input, note, tags, now)
     .first<Row>();
-  return c.json({ item: toItem(row!), duplicate: false }, 201);
+  return reply(row!, false);
 });
 
 app.patch("/items/:id", async (c) => {

@@ -6,7 +6,6 @@ export function Settings({ onClose, onCopied }: { onClose: () => void; onCopied:
   const [token, setToken] = useState("");
   const bookmarklet = useRef<HTMLAnchorElement>(null);
   const endpoint = `${location.origin}/api/items`;
-  const prompt = shortcutPrompt(endpoint);
 
   useEffect(() => {
     void api.token().then((r) => setToken(r.token)).catch(() => {});
@@ -23,36 +22,26 @@ export function Settings({ onClose, onCopied }: { onClose: () => void; onCopied:
     <Sheet title="Settings" onClose={onClose} trailing={<button type="button" className="text-button strong" onClick={onClose}>Done</button>}>
       <h3 className="group-title">iPhone share sheet</h3>
       <div className="group">
-        <pre className="prompt">{prompt}</pre>
-        <button type="button" className="row copy-row strong-row" onClick={() => copy(prompt, "Prompt")}>
-          <span>Copy Prompt</span>
+        <ol className="steps">
+          <li>Open <b>Shortcuts</b> and tap <b>+</b>. Tap the name at the top and rename it <b>Save to Pockit</b>.</li>
+          <li>Tap <b>ⓘ</b> and turn on <b>Show in Share Sheet</b>. Back in the editor, tap <b>Any</b> in “Receive Any input” and keep only <b>URLs</b> and <b>Text</b>.</li>
+          <li>Add the <b>Get Contents of URL</b> action. Tap its <b>URL</b> field and paste the URL row below. Nothing else goes in that field.</li>
+          <li>Tap <b>›</b> on the action to show more. Set <b>Method</b> to <b>POST</b>.</li>
+          <li>Under <b>Headers</b>, tap <b>Add new header</b>. Key <code>Authorization</code>, value is the Header row below.</li>
+          <li>Set <b>Request Body</b> to <b>JSON</b>. Tap <b>Add new field</b>, choose <b>Text</b>, and set the key to <code>input</code>. Tap the value and pick <b>Shortcut Input</b> from the bar above the keyboard.</li>
+          <li>Add the <b>Show Notification</b> action. Delete its text and pick <b>Contents of URL</b> from the bar above the keyboard.</li>
+          <li>Tap <b>Done</b>. Share any link to <b>Save to Pockit</b>. The notification reads “Saved: title”, or says what went wrong.</li>
+        </ol>
+        <button type="button" className="row copy-row" onClick={() => copy(endpoint, "URL")}>
+          <span>URL</span>
+          <code>{endpoint}</code>
         </button>
         <button type="button" className="row copy-row" disabled={!token} onClick={() => copy(`Bearer ${token}`, "Header")}>
           <span>Header</span>
           <code>Bearer {token ? `${token.slice(0, 10)}…` : "…"}</code>
         </button>
       </div>
-      <p className="group-footer">
-        Paste the prompt into the Shortcuts app. It has no token, so then copy the Header row and paste it over <code>Bearer {TOKEN_PLACEHOLDER}</code> in the Authorization header.
-      </p>
-
-      <details className="group manual">
-        <summary className="row">Set it up by hand</summary>
-        <ol className="steps">
-          <li>Open <b>Shortcuts</b>, tap <b>+</b>, name it <b>Save to Pockit</b>.</li>
-          <li>In its details, turn on <b>Show in Share Sheet</b> and accept <b>URLs</b> and <b>Text</b>.</li>
-          <li>Add <b>Get Contents of URL</b>. Paste the URL below as plain text, with nothing after it.</li>
-          <li>Tap <b>Show More</b>. Set Method to <b>POST</b>.</li>
-          <li>Under Headers, add one header. Key <code>Authorization</code>, value is the Header row above.</li>
-          <li>Set Request Body to <b>JSON</b>. Add a <b>Text</b> field with key <code>input</code>, and pick the <b>Shortcut Input</b> variable as its value.</li>
-          <li>Add <b>Show Notification</b> and set its body to the <b>Contents of URL</b> variable, so errors show up too.</li>
-        </ol>
-        <button type="button" className="row copy-row" onClick={() => copy(endpoint, "URL")}>
-          <span>URL</span>
-          <code>{endpoint}</code>
-        </button>
-      </details>
-      <p className="group-footer">The token changes if you change POCKIT_PASSWORD. Rebuild the shortcut after that.</p>
+      <p className="group-footer">Tap a row to copy it. If you change POCKIT_PASSWORD, the token changes, so paste the new Header row into the shortcut.</p>
 
       <h3 className="group-title">Laptop</h3>
       <div className="group">
@@ -69,19 +58,3 @@ export function Settings({ onClose, onCopied }: { onClose: () => void; onCopied:
   );
 }
 
-const TOKEN_PLACEHOLDER = "PASTE_TOKEN_HERE";
-
-const shortcutPrompt = (endpoint: string) => `Create a shortcut named "Save to Pockit".
-
-Show it in the Share Sheet and accept URLs and Text. If there is no input, ask for text.
-
-Actions:
-1. Get Contents of URL.
-   - URL: ${endpoint}
-     Type it exactly as plain text. Do not add Shortcut Input or any variable to the URL.
-   - Method: POST
-   - Headers: one header with key "Authorization" and value "Bearer ${TOKEN_PLACEHOLDER}"
-   - Request Body: JSON, with one Text field. Key "input", value is the Shortcut Input variable.
-2. Get Dictionary Value for key "error" from Contents of URL.
-3. If Dictionary Value has any value, show a notification with the text "Pockit error: " followed by Dictionary Value.
-4. Otherwise, get the value for key "item" from Contents of URL, then get the value for key "title" from that, and show a notification with the text "Saved to Pockit: " followed by that title.`;
