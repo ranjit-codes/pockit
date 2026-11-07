@@ -11,8 +11,7 @@
     {
       "binding": "DB",
       "database_name": "pockit",
-      // Replace with the id printed by `npx wrangler d1 create pockit` before deploying.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "ed197d4f-7ff1-4bb3-9615-ff03034d45d0",
       "migrations_dir": "migrations"
     }
   ]
