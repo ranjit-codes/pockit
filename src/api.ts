@@ -1,4 +1,4 @@
-import type { Item, ItemPatch, Kind, NewItem } from "../shared/item";
+import type { Facets, Item, ItemPatch, Kind, NewItem } from "../shared/item";
 
 export class Unauthorized extends Error {}
 
@@ -23,7 +23,8 @@ export const api = {
     if (tag) params.set("tag", tag);
     return call<Item[]>(`/items?${params}`);
   },
-  tags: () => call<{ tag: string; count: number }[]>("/tags"),
+  facets: () => call<Facets>("/facets"),
+  token: () => call<{ token: string }>("/token"),
   create: (item: NewItem) => call<{ item: Item; duplicate: boolean }>("/items", { method: "POST", body: JSON.stringify(item) }),
   update: (id: string, patch: ItemPatch) => call<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   remove: (id: string) => call<void>(`/items/${id}`, { method: "DELETE" }),

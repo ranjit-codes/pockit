@@ -54,12 +54,14 @@ app.post("/login", async (c) => {
 });
 
 app.use("*", async (c, next) => {
-  const cookie = getCookie(c, COOKIE);
-  if (!cookie || !c.env.POCKIT_PASSWORD || !safeEqual(cookie, await sessionToken(c.env.POCKIT_PASSWORD))) {
+  const presented = getCookie(c, COOKIE) ?? c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!presented || !c.env.POCKIT_PASSWORD || !safeEqual(presented, await sessionToken(c.env.POCKIT_PASSWORD))) {
     return c.json({ error: "Unauthorized" }, 401);
   }
   await next();
 });
+
+app.get("/token", async (c) => c.json({ token: await sessionToken(c.env.POCKIT_PASSWORD) }));
 
 app.get("/items", async (c) => {
   const q = ftsQuery(c.req.query("q") ?? "");
@@ -92,11 +94,12 @@ app.get("/items", async (c) => {
   return c.json(results.map(toItem));
 });
 
-app.get("/tags", async (c) => {
-  const { results } = await c.env.DB.prepare(
-    "SELECT value AS tag, COUNT(*) AS count FROM items, json_each(items.tags) GROUP BY value ORDER BY count DESC, tag",
-  ).all<{ tag: string; count: number }>();
-  return c.json(results);
+app.get("/facets", async (c) => {
+  const [kinds, tags] = await c.env.DB.batch<{ name: string; count: number }>([
+    c.env.DB.prepare("SELECT kind AS name, COUNT(*) AS count FROM items GROUP BY kind"),
+    c.env.DB.prepare("SELECT value AS name, COUNT(*) AS count FROM items, json_each(items.tags) GROUP BY value ORDER BY count DESC, name"),
+  ]);
+  return c.json({ total: kinds!.results.reduce((n, k) => n + k.count, 0), kinds: kinds!.results, tags: tags!.results });
 });
 
 app.post("/items", async (c) => {

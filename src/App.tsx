@@ -1,31 +1,12 @@
-import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { firstUrl, type Item, KINDS, type Kind } from "../shared/item";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type Facets, firstUrl, type Item, KINDS, type Kind } from "../shared/item";
 import { api, type Filters, Unauthorized } from "./api";
-
-const KIND_LABEL: Record<Kind, string> = {
-  link: "Link",
-  article: "Article",
-  video: "Video",
-  tweet: "Tweet",
-  repo: "Repo",
-  prompt: "Prompt",
-  snippet: "Snippet",
-  note: "Note",
-};
-
-const TEXT_KINDS: Kind[] = ["note", "prompt", "snippet"];
-
-const parseTags = (raw: string) => raw.split(/[\s,]+/).filter(Boolean);
-const isSingleUrl = (text: string) => /^https?:\/\/\S+$/.test(text.trim());
-const host = (url: string) => new URL(url).hostname.replace(/^www\./, "");
-const ago = (ms: number) => {
-  const s = (Date.now() - ms) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-};
+import { Composer } from "./Composer";
+import { Icon } from "./icons";
+import { EditSheet, ItemCard } from "./ItemCard";
+import { KIND_INFO } from "./kinds";
+import { Settings } from "./Settings";
+import { useKeyboardInset } from "./useKeyboardInset";
 
 const sharedInput = () => {
   if (location.pathname !== "/share") return null;
@@ -36,305 +17,289 @@ const sharedInput = () => {
 };
 
 const SHARED_INPUT = sharedInput();
+const EMPTY_FACETS: Facets = { total: 0, kinds: [], tags: [] };
 
 export function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  return authed === false ? (
-    <Login onDone={() => setAuthed(true)} />
-  ) : (
-    <Vault pendingShare={SHARED_INPUT} onUnauthorized={() => setAuthed(false)} onAuthed={() => setAuthed(true)} />
+  useKeyboardInset();
+  return (
+    <>
+      <div className="ambient" aria-hidden />
+      {authed === false ? (
+        <Login onDone={() => setAuthed(true)} />
+      ) : (
+        <Vault pendingShare={SHARED_INPUT} onUnauthorized={() => setAuthed(false)} />
+      )}
+    </>
   );
 }
 
 function Login({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
       await api.login(password);
       onDone();
     } catch {
-      setError("Wrong password");
+      setError(true);
     }
   };
   return (
-    <form className="login" onSubmit={submit}>
+    <form className="login glass" onSubmit={submit}>
+      <img src="/icon.svg" alt="" width={64} height={64} />
       <h1>Pockit</h1>
-      <input type="password" autoFocus placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      <button type="submit">Unlock</button>
-      {error && <p className="error">{error}</p>}
+      <p>Everything worth keeping.</p>
+      <input
+        type="password"
+        autoFocus
+        placeholder="Password"
+        aria-invalid={error}
+        value={password}
+        onChange={(e) => {
+          setPassword(e.target.value);
+          setError(false);
+        }}
+      />
+      <button type="submit" className="primary">Unlock</button>
+      <p className="error" role="alert">{error ? "Wrong password" : " "}</p>
     </form>
   );
 }
 
-function Vault({ pendingShare, onUnauthorized, onAuthed }: { pendingShare: string | null; onUnauthorized: () => void; onAuthed: () => void }) {
+const filterTitle = ({ kind, tag }: Filters) => (tag ? `#${tag}` : kind ? KIND_INFO[kind].plural : "All Items");
+
+function Vault({ pendingShare, onUnauthorized }: { pendingShare: string | null; onUnauthorized: () => void }) {
   const [items, setItems] = useState<Item[]>([]);
-  const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [filters, setFilters] = useState<Filters>({ q: "", kind: null, tag: null });
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [toast, setToast] = useState("");
+  const [editing, setEditing] = useState<Item | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const shareHandled = useRef(false);
+  const [pinned, setPinned] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setPinned(window.scrollY > 70);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const flash = useCallback((text: string) => {
+    const id = Date.now();
+    setToast({ text, id });
+    setTimeout(() => setToast((t) => (t?.id === id ? null : t)), 2000);
+  }, []);
 
   const guard = useCallback(
     async <T,>(work: Promise<T>): Promise<T | undefined> => {
       try {
-        const result = await work;
-        onAuthed();
-        return result;
+        return await work;
       } catch (e) {
         if (e instanceof Unauthorized) onUnauthorized();
         else flash(e instanceof Error ? e.message : "Something went wrong");
       }
     },
-    [onAuthed, onUnauthorized],
+    [flash, onUnauthorized],
   );
 
-  const flash = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(""), 2200);
-  };
-
   const refresh = useCallback(async () => {
-    const [list, tagList] = (await guard(Promise.all([api.list(filters), api.tags()]))) ?? [];
-    if (list) setItems(list);
-    if (tagList) setTags(tagList);
+    const result = await guard(Promise.all([api.list(filters), api.facets()]));
+    if (!result) return;
+    setItems(result[0]);
+    setFacets(result[1]);
+    setLoaded(true);
   }, [filters, guard]);
 
   useEffect(() => {
-    const t = setTimeout(refresh, filters.q ? 200 : 0);
+    const t = setTimeout(refresh, filters.q ? 180 : 0);
     return () => clearTimeout(t);
   }, [refresh, filters.q]);
 
-  const save = async (input: string, kind: Kind | undefined, tagList: string[]) => {
-    const res = await guard(api.create({ input, kind, tags: tagList }));
+  const save = async (input: string, kind: Kind | undefined, tags: string[]) => {
+    const res = await guard(api.create({ input, kind, tags }));
     if (!res) return false;
     flash(res.duplicate ? "Already saved" : "Saved");
-    setOpenId(res.item.id);
     await refresh();
     return true;
   };
 
   useEffect(() => {
-    if (pendingShare && !shareHandled.current) {
-      shareHandled.current = true;
-      void save(pendingShare, undefined, []);
-    }
-  });
+    if (!pendingShare || shareHandled.current) return;
+    shareHandled.current = true;
+    void guard(api.create({ input: pendingShare })).then(async (res) => {
+      if (!res) {
+        shareHandled.current = false;
+        return;
+      }
+      flash(res.duplicate ? "Already saved" : "Saved");
+      setEditing(res.item);
+      await refresh();
+    });
+  }, [pendingShare, guard, flash, refresh]);
 
-  const filtered = filters.q || filters.kind || filters.tag;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (e.metaKey || e.ctrlKey || e.altKey || target.closest("input, textarea, select, [role=dialog]")) return;
+      if (e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (e.key === "n") {
+        e.preventDefault();
+        composerRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const setKind = (kind: Kind | null) => setFilters((f) => ({ ...f, kind, tag: null }));
+  const setTag = (tag: string | null) => setFilters((f) => ({ ...f, tag, kind: null }));
+  const kindCount = (k: Kind) => facets.kinds.find((f) => f.name === k)?.count ?? 0;
+  const presentKinds = KINDS.filter((k) => kindCount(k) > 0);
+  const filtered = Boolean(filters.q || filters.kind || filters.tag);
 
   return (
-    <main>
-      <header>
-        <h1>Pockit</h1>
-        <span className="count">{items.length}{items.length === 200 ? "+" : ""} {filtered ? "found" : "saved"}</span>
-      </header>
+    <div className="shell">
+      <div className="status-bar glass-strip" aria-hidden />
 
-      <Capture onSave={save} />
-
-      <section className="filters">
-        <input
-          className="search"
-          type="search"
-          placeholder="Search everything…"
-          value={filters.q}
-          onChange={(e) => setFilters({ ...filters, q: e.target.value })}
-        />
-        <div className="chips">
-          <Chip active={!filters.kind} onClick={() => setFilters({ ...filters, kind: null })}>All</Chip>
-          {KINDS.map((k) => (
-            <Chip key={k} kind={k} active={filters.kind === k} onClick={() => setFilters({ ...filters, kind: filters.kind === k ? null : k })}>
-              {KIND_LABEL[k]}
-            </Chip>
-          ))}
+      <aside className="sidebar glass">
+        <div className="sidebar-brand">
+          <img src="/icon.svg" alt="" width={28} height={28} />
+          <span>Pockit</span>
         </div>
-        {tags.length > 0 && (
-          <div className="chips tags">
-            {tags.map(({ tag, count }) => (
-              <Chip key={tag} active={filters.tag === tag} onClick={() => setFilters({ ...filters, tag: filters.tag === tag ? null : tag })}>
-                #{tag} <small>{count}</small>
-              </Chip>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <ul className="items">
-        {items.map((item) => (
-          <ItemCard
-            key={item.id}
-            item={item}
-            open={openId === item.id}
-            onToggle={() => setOpenId(openId === item.id ? null : item.id)}
-            onTag={(tag) => setFilters({ ...filters, tag })}
-            onCopy={() => flash("Copied")}
-            onUpdate={async (patch) => {
-              if (await guard(api.update(item.id, patch))) {
-                setOpenId(null);
-                await refresh();
-              }
-            }}
-            onDelete={async () => {
-              await guard(api.remove(item.id));
-              await refresh();
-            }}
-          />
-        ))}
-      </ul>
-      {items.length === 0 && <p className="empty">{filtered ? "Nothing matches." : "Paste a link or some text above to save your first thing."}</p>}
-
-      {toast && <div className="toast">{toast}</div>}
-    </main>
-  );
-}
-
-function Chip({ active, kind, onClick, children }: { active: boolean; kind?: Kind; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button type="button" className={`chip${active ? " active" : ""}`} data-kind={kind} onClick={onClick}>
-      {children}
-    </button>
-  );
-}
-
-function Capture({ onSave }: { onSave: (input: string, kind: Kind | undefined, tags: string[]) => Promise<boolean> }) {
-  const [input, setInput] = useState("");
-  const [kind, setKind] = useState<Kind>("note");
-  const [tags, setTags] = useState("");
-  const [busy, setBusy] = useState(false);
-  const isUrl = isSingleUrl(input);
-
-  const submit = async (e?: FormEvent) => {
-    e?.preventDefault();
-    if (!input.trim() || busy) return;
-    setBusy(true);
-    const ok = await onSave(input, isUrl ? undefined : kind, parseTags(tags));
-    setBusy(false);
-    if (ok) {
-      setInput("");
-      setTags("");
-      setKind("note");
-    }
-  };
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey || (isUrl && !e.shiftKey))) {
-      e.preventDefault();
-      void submit();
-    }
-  };
-
-  return (
-    <form className="capture" onSubmit={submit}>
-      <textarea
-        autoFocus
-        rows={input.includes("\n") ? 5 : 1}
-        placeholder="Paste a URL, prompt, snippet, or note…"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={onKeyDown}
-      />
-      {input.trim() && (
-        <div className="capture-row">
-          {!isUrl && (
-            <div className="chips">
-              {TEXT_KINDS.map((k) => (
-                <Chip key={k} kind={k} active={kind === k} onClick={() => setKind(k)}>
-                  {KIND_LABEL[k]}
-                </Chip>
+        <nav>
+          <SidebarItem icon="all" label="All Items" count={facets.total} active={!filters.kind && !filters.tag} onClick={() => setFilters((f) => ({ ...f, kind: null, tag: null }))} />
+          {KINDS.map((k) => (
+            <SidebarItem key={k} icon={k} kind={k} label={KIND_INFO[k].plural} count={kindCount(k)} active={filters.kind === k} onClick={() => setKind(filters.kind === k ? null : k)} />
+          ))}
+        </nav>
+        {facets.tags.length > 0 && (
+          <>
+            <h3 className="sidebar-heading">Tags</h3>
+            <nav className="sidebar-tags">
+              {facets.tags.map((t) => (
+                <SidebarItem key={t.name} icon="tag" label={t.name} count={t.count} active={filters.tag === t.name} onClick={() => setTag(filters.tag === t.name ? null : t.name)} />
               ))}
+            </nav>
+          </>
+        )}
+        <button type="button" className="sidebar-settings" onClick={() => setSettingsOpen(true)}>
+          <Icon name="settings" />
+          Settings
+        </button>
+      </aside>
+
+      <main className="content">
+        <header className="large-title">
+          <div>
+            <h1>{filterTitle(filters)}</h1>
+            <p>{loaded ? `${items.length}${items.length === 200 ? "+" : ""} ${items.length === 1 ? "item" : "items"}${filters.q ? " found" : ""}` : " "}</p>
+          </div>
+          <button type="button" className="icon-button glass round settings-button" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+            <Icon name="settings" />
+          </button>
+        </header>
+
+        <div className={`toolbar${pinned ? " pinned" : ""}`}>
+          <label className="search glass">
+            <Icon name="search" size={17} />
+            <input
+              ref={searchRef}
+              type="search"
+              placeholder="Search"
+              enterKeyHint="search"
+              value={filters.q}
+              onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+              onKeyDown={(e) => e.key === "Escape" && (setFilters((f) => ({ ...f, q: "" })), e.currentTarget.blur())}
+            />
+            {filters.q && (
+              <button type="button" className="clear" onClick={() => setFilters((f) => ({ ...f, q: "" }))} aria-label="Clear search">
+                <Icon name="close" size={12} strokeWidth={2.6} />
+              </button>
+            )}
+          </label>
+          {(presentKinds.length > 0 || facets.tags.length > 0) && (
+            <div className="chip-scroller">
+              <div className="chips">
+                <button type="button" className={`chip glass${!filters.kind && !filters.tag ? " on" : ""}`} onClick={() => setFilters((f) => ({ ...f, kind: null, tag: null }))}>
+                  All
+                </button>
+                {presentKinds.map((k) => (
+                  <button type="button" key={k} data-kind={k} className={`chip glass${filters.kind === k ? " on" : ""}`} onClick={() => setKind(filters.kind === k ? null : k)}>
+                    <Icon name={k} size={15} />
+                    {KIND_INFO[k].plural}
+                  </button>
+                ))}
+                {facets.tags.map((t) => (
+                  <button type="button" key={t.name} className={`chip glass${filters.tag === t.name ? " on" : ""}`} onClick={() => setTag(filters.tag === t.name ? null : t.name)}>
+                    #{t.name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
-          <input className="tag-input" placeholder="tags: react, ai" value={tags} onChange={(e) => setTags(e.target.value)} onKeyDown={onKeyDown} />
-          <button type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
         </div>
-      )}
-    </form>
-  );
-}
 
-type CardProps = {
-  item: Item;
-  open: boolean;
-  onToggle: () => void;
-  onTag: (tag: string) => void;
-  onCopy: () => void;
-  onUpdate: (patch: Partial<Item>) => Promise<void>;
-  onDelete: () => Promise<void>;
-};
-
-function ItemCard({ item, open, onToggle, onTag, onCopy, onUpdate, onDelete }: CardProps) {
-  const copy = async () => {
-    await navigator.clipboard.writeText(item.body ?? item.url ?? item.title);
-    onCopy();
-  };
-  return (
-    <li className="item">
-      <div className="item-head">
-        {item.meta.image && item.url && <img className="thumb" src={item.meta.image} alt="" loading="lazy" referrerPolicy="no-referrer" />}
-        <div className="item-main">
-          <div className="item-meta">
-            <span className="badge" data-kind={item.kind}>{KIND_LABEL[item.kind]}</span>
-            {item.url && <span>{host(item.url)}</span>}
-            <span>{ago(item.createdAt)}</span>
-          </div>
-          {item.url ? (
-            <a className="title" href={item.url} target="_blank" rel="noreferrer">{item.title}</a>
-          ) : (
-            <span className="title">{item.title}</span>
-          )}
-          {item.meta.description && item.kind !== "tweet" && <p className="desc">{item.meta.description}</p>}
-        </div>
-        <div className="actions">
-          <button type="button" className="ghost" onClick={copy} title="Copy">Copy</button>
-          <button type="button" className="ghost" onClick={onToggle} title="Edit">{open ? "Close" : "Edit"}</button>
-        </div>
-      </div>
-      {item.body && !open && <pre className="body">{item.body}</pre>}
-      {item.note && !open && <p className="note">{item.note}</p>}
-      {item.tags.length > 0 && !open && (
-        <div className="item-tags">
-          {item.tags.map((t) => (
-            <button type="button" key={t} className="tag" onClick={() => onTag(t)}>#{t}</button>
+        <ul className="cards">
+          {items.map((item) => (
+            <ItemCard key={item.id} item={item} onTag={setTag} onCopy={() => flash("Copied")} onEdit={() => setEditing(item)} />
           ))}
+        </ul>
+        {loaded && items.length === 0 && (
+          <div className="empty">
+            <Icon name={filtered ? "search" : "paste"} size={40} strokeWidth={1.4} />
+            <h2>{filtered ? "No Results" : "Nothing Saved Yet"}</h2>
+            <p>{filtered ? "Try a different search or filter." : "Paste a link, prompt, or note below. Share from any app to save it here."}</p>
+          </div>
+        )}
+      </main>
+
+      <Composer inputRef={composerRef} onSave={save} />
+
+      {toast && (
+        <div className="toast glass" key={toast.id} role="status">
+          <Icon name="check" size={16} strokeWidth={2.4} />
+          {toast.text}
         </div>
       )}
-      {open && <Editor item={item} onUpdate={onUpdate} onDelete={onDelete} />}
-    </li>
+
+      {editing && (
+        <EditSheet
+          item={editing}
+          onClose={() => setEditing(null)}
+          onSave={async (patch) => {
+            if (await guard(api.update(editing.id, patch))) {
+              setEditing(null);
+              await refresh();
+            }
+          }}
+          onDelete={async () => {
+            await guard(api.remove(editing.id));
+            setEditing(null);
+            flash("Deleted");
+            await refresh();
+          }}
+        />
+      )}
+      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} onCopied={(what) => flash(`${what} copied`)} />}
+    </div>
   );
 }
 
-function Editor({ item, onUpdate, onDelete }: Pick<CardProps, "item" | "onUpdate" | "onDelete">) {
-  const [title, setTitle] = useState(item.title);
-  const [kind, setKind] = useState(item.kind);
-  const [tags, setTags] = useState(item.tags.join(", "));
-  const [note, setNote] = useState(item.note ?? "");
-  const [body, setBody] = useState(item.body ?? "");
-  const [confirming, setConfirming] = useState(false);
+type SidebarItemProps = { icon: Kind | "all" | "tag"; kind?: Kind; label: string; count: number; active: boolean; onClick: () => void };
+
+function SidebarItem({ icon, kind, label, count, active, onClick }: SidebarItemProps) {
   return (
-    <form
-      className="editor"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void onUpdate({ title, kind, tags: parseTags(tags), note, ...(item.body !== null && { body }) });
-      }}
-    >
-      <label>Title<input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-      <label>
-        Kind
-        <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
-          {KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-        </select>
-      </label>
-      <label>Tags<input autoFocus placeholder="react, ai, later" value={tags} onChange={(e) => setTags(e.target.value)} /></label>
-      {item.body !== null && <label>Content<textarea rows={6} value={body} onChange={(e) => setBody(e.target.value)} /></label>}
-      <label>Note<textarea rows={2} placeholder="Why is this worth keeping?" value={note} onChange={(e) => setNote(e.target.value)} /></label>
-      <div className="editor-actions">
-        <button type="submit">Save</button>
-        <button type="button" className={confirming ? "danger" : "ghost"} onClick={() => (confirming ? void onDelete() : setConfirming(true))}>
-          {confirming ? "Really delete?" : "Delete"}
-        </button>
-      </div>
-    </form>
+    <button type="button" className={`sidebar-item${active ? " on" : ""}`} data-kind={kind} onClick={onClick}>
+      <Icon name={icon} />
+      <span>{label}</span>
+      {count > 0 && <small>{count}</small>}
+    </button>
   );
 }

@@ -38,3 +38,6 @@ export const firstUrl = (text: string): string | null => {
   const match = text.match(/https?:\/\/[^\s<>"']+/);
   return match ? match[0] : null;
 };
+
+export type Facet = { name: string; count: number };
+export type Facets = { total: number; kinds: Facet[]; tags: Facet[] };

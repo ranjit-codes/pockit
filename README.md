@@ -21,10 +21,10 @@ npx wrangler secret put POCKIT_PASSWORD
 npm run deploy
 ```
 
-Open the deployed URL on your phone and choose "Install app" (Chrome) or "Add to Home Screen". After that, share from any app to Pockit.
+## Saving from your devices
 
-To save the current tab on desktop, add this bookmarklet:
+- **iPhone.** Open the deployed URL in Safari, then Share > Add to Home Screen. iOS doesn't let web apps join the share sheet, so add the "Save to Pockit" Shortcut instead. The app's Settings sheet lists the steps and copies the URL and token for you.
+- **Laptop.** Drag the bookmarklet from Settings to your bookmarks bar. Press `/` to search, `N` to add, `Ctrl+Enter` to save text.
+- **Android.** Install the app from Chrome. Pockit then appears in the share sheet.
 
-```js
-javascript:location.href='https://YOUR-POCKIT.workers.dev/share?url='+encodeURIComponent(location.href)
-```
+The Shortcut authenticates with `Authorization: Bearer <token>`. The token is derived from `POCKIT_PASSWORD`, so changing the password revokes it.
