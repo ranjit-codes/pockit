@@ -32,7 +32,7 @@ You need:
 1. Clone the repo and install dependencies.
 
    ```sh
-   git clone https://github.com/<you>/pockit.git
+   git clone https://github.com/ranjit-codes/pockit.git
    cd pockit
    npm install
    ```
