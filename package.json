@@ -1,6 +1,12 @@
 {
   "name": "pockit",
+  "version": "0.1.0",
+  "description": "Save every good link, video, tweet, repo, AI prompt, and snippet in one place. Self-hosted on Cloudflare's free tier.",
+  "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
